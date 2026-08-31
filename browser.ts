@@ -23,7 +23,8 @@ export interface SnapshotOptions {
 
 export interface TabInfo {
   active: boolean;
-  index: number;
+  index?: number;
+  tabId?: string;
   title: string;
   type: string;
   url: string;
@@ -34,6 +35,11 @@ export interface CookieInfo {
   value: string;
   domain: string;
   path?: string;
+}
+
+export function tabHandle(tab: TabInfo): number | string | null {
+  if (tab.tabId) return tab.tabId;
+  return Number.isInteger(tab.index) ? (tab.index as number) : null;
 }
 
 export interface Browser {
@@ -54,7 +60,7 @@ export interface Browser {
   url(): Promise<string>;
   title(): Promise<string>;
   tabs(): Promise<TabInfo[]>;
-  activateTab(index: number): Promise<void>;
+  activateTab(handle: number | string): Promise<void>;
   reload(): Promise<string>;
   cookies(): Promise<CookieInfo[]>;
   snapshot<T = unknown>(opts?: SnapshotOptions): Promise<T>;
@@ -165,8 +171,8 @@ export function createBrowser({
       }
       return env.data?.tabs ?? [];
     },
-    activateTab: async (index) => {
-      await run(['tab', String(index)]);
+    activateTab: async (handle) => {
+      await run(['tab', String(handle)]);
     },
     reload: () => run(['reload']),
     cookies: async () => {

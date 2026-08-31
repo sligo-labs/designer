@@ -1,5 +1,5 @@
 #!/usr/bin/env -S node --import tsx
-import { createBrowser } from '../browser.ts';
+import { createBrowser, tabHandle } from '../browser.ts';
 
 const cmd = process.argv[2];
 const arg = process.argv[3];
@@ -47,11 +47,13 @@ async function main(): Promise<void> {
       const composer = '[data-testid="chat-composer-input"]';
       const signedIn = '[data-testid="create-project-button"]';
       for (const t of tabs) {
-        await browser.activateTab(t.index).catch(() => null);
+        const handle = tabHandle(t);
+        if (handle === null) continue;
+        await browser.activateTab(handle).catch(() => null);
         const composerOk = await browser.isVisible(composer).catch(() => false);
         const signedInOk = await browser.isVisible(signedIn).catch(() => false);
         const flag = composerOk ? 'composer' : signedInOk ? 'home' : 'unrecognized';
-        console.log(`[${t.index}] active=${t.active ? 'Y' : 'N'} ${flag.padEnd(12)} ${t.url}`);
+        console.log(`[${handle}] active=${t.active ? 'Y' : 'N'} ${flag.padEnd(12)} ${t.url}`);
       }
       break;
     }

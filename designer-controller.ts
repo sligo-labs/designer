@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { createBrowser, type Browser } from './browser.ts';
+import { createBrowser, tabHandle, type Browser } from './browser.ts';
 import { sessionDir, saveIteration, type IterationRecord } from './artifact-store.ts';
 import { upsertSession, appendHistory, getSession, type StoredSession } from './session-store.ts';
 import { getSelectors, orderedBranches, presenceSelector, type Selectors } from './selectors.ts';
@@ -12,6 +12,7 @@ import { OopifHtmlReader } from './oopif-reader.ts';
 import { isPreviewIframeSrc, previewIframeVariant } from './preview-host.ts';
 import { isCdpEnabled } from './cdp-env.ts';
 import { BeforeUnloadAccepter } from './cdp-dialog.ts';
+import { projectChatTabRef, sameDesignProject } from './project-view.ts';
 import {
   classifyInterstitial,
   plannedAction,
@@ -575,7 +576,10 @@ export class DesignerController {
     // Bind agent-browser to the adopted tab for subsequent prompt/handoff. If
     // activation races or fails, the stored designUrl (from the validated URL
     // above) is still correct — ensureReady re-binds by it later.
-    if (top) await this.browser.activateTab(top.index).catch(() => null);
+    if (top) {
+      const handle = tabHandle(top);
+      if (handle !== null) await this.browser.activateTab(handle).catch(() => null);
+    }
 
     const designUrl = url.split('?')[0] || url;
     const uuid = m[1] ?? '';
@@ -591,7 +595,11 @@ export class DesignerController {
     const tabs = await this.browser.tabs().catch(() => [] as Awaited<ReturnType<Browser['tabs']>>);
     return tabs
       .filter((t) => t.type === 'page' && t.url && match(t.url))
-      .sort((a, b) => Number(b.active) - Number(a.active) || a.index - b.index);
+      .sort(
+        (a, b) =>
+          Number(b.active) - Number(a.active) ||
+          String(tabHandle(a) ?? '').localeCompare(String(tabHandle(b) ?? ''), undefined, { numeric: true }),
+      );
   }
 
   // Pick the live claude.ai/design tab among possibly many CDP pages, switch
@@ -612,8 +620,30 @@ export class DesignerController {
     if (candidates.length === 0) return { matched: false, candidates: 0 };
 
     for (const cand of candidates) {
-      await this.browser.activateTab(cand.index).catch(() => null);
-      const composerOk = await this.browser.isVisible(this.selectors.composer.promptTextarea).catch(() => false);
+      const handle = tabHandle(cand);
+      if (handle === null) continue;
+      try {
+        await this.browser.activateTab(handle);
+      } catch {
+        continue;
+      }
+      const activeUrl = await this.currentUrl().catch(() => '');
+      if (!sameDesignProject(cand.url, activeUrl)) continue;
+      let composerOk = await this.browser.isVisible(this.selectors.composer.promptTextarea).catch(() => false);
+      if (!composerOk && SESSION_URL_RE.test(cand.url)) {
+        // Generation can leave a project on its files/preview subview, where
+        // auth is healthy but the chat composer is hidden. Address the first
+        // tab specifically under Project view; never click unscoped role=tab.
+        const snapshot = await this.browser.snapshotText({ interactive: false }).catch(() => '');
+        const ref = projectChatTabRef(snapshot);
+        if (ref) {
+          await this.browser.click(`@${ref}`).catch(() => null);
+          for (let i = 0; i < 20 && !composerOk; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            composerOk = await this.browser.isVisible(this.selectors.composer.promptTextarea).catch(() => false);
+          }
+        }
+      }
       const homeOk = this._signedInMarker()
         ? await this.browser.isVisible(this._signedInMarker()).catch(() => false)
         : false;
@@ -791,7 +821,8 @@ export class DesignerController {
     );
     const recoveryTab = designTabs[0];
     if (recoveryTab) {
-      await this.browser.activateTab(recoveryTab.index).catch(() => null);
+      const handle = tabHandle(recoveryTab);
+      if (handle !== null) await this.browser.activateTab(handle).catch(() => null);
       const report = await this.clearInterstitials();
       if (report.blocked) throw this._interstitialError(report.blocked, designTabs.length);
       if (report.handled.length > 0) {
