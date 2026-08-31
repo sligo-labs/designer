@@ -12,6 +12,7 @@ import { OopifHtmlReader } from './oopif-reader.ts';
 import { isPreviewIframeSrc, previewIframeVariant } from './preview-host.ts';
 import { isCdpEnabled } from './cdp-env.ts';
 import { BeforeUnloadAccepter } from './cdp-dialog.ts';
+import { projectChatTabRef } from './project-view.ts';
 import {
   classifyInterstitial,
   plannedAction,
@@ -613,7 +614,19 @@ export class DesignerController {
 
     for (const cand of candidates) {
       await this.browser.activateTab(cand.index).catch(() => null);
-      const composerOk = await this.browser.isVisible(this.selectors.composer.promptTextarea).catch(() => false);
+      let composerOk = await this.browser.isVisible(this.selectors.composer.promptTextarea).catch(() => false);
+      if (!composerOk && SESSION_URL_RE.test(cand.url)) {
+        // Generation can leave a project on its files/preview subview, where
+        // auth is healthy but the chat composer is hidden. Address the first
+        // tab specifically under Project view; never click unscoped role=tab.
+        const snapshot = await this.browser.snapshotText({ interactive: false }).catch(() => '');
+        const ref = projectChatTabRef(snapshot);
+        if (ref) {
+          await this.browser.click(`@${ref}`).catch(() => null);
+          await this.browser.waitFor(this.selectors.composer.promptTextarea).catch(() => null);
+          composerOk = await this.browser.isVisible(this.selectors.composer.promptTextarea).catch(() => false);
+        }
+      }
       const homeOk = this._signedInMarker()
         ? await this.browser.isVisible(this._signedInMarker()).catch(() => false)
         : false;
